@@ -99,7 +99,7 @@ export default function DeviceSelector({
                 <button
                   key={device.address}
                   onClick={() => onDeviceSelect(device)}
-                  className="w-full p-4 text-left border rounded-lg hover:bg-accent hover:border-primary transition-colors"
+                      className="w-full p-4 text-left border rounded-lg hover:bg-muted hover:border-primary/50 transition-colors"
                 >
                   <div className="font-medium">{device.name}</div>
                   <div className="text-sm text-muted-foreground font-mono">
@@ -112,7 +112,7 @@ export default function DeviceSelector({
                 <div className="space-y-2">
                   <button
                     onClick={() => setShowUnnamed(!showUnnamed)}
-                    className="w-full p-3 text-left border rounded-lg hover:bg-accent transition-colors flex items-center justify-between"
+                    className="w-full p-3 text-left border rounded-lg hover:bg-muted transition-colors flex items-center justify-between"
                   >
                     <span className="text-sm text-muted-foreground">
                       {unnamedDevices.length} unnamed device(s)
@@ -130,7 +130,7 @@ export default function DeviceSelector({
                         <button
                           key={device.address}
                           onClick={() => onDeviceSelect(device)}
-                          className="w-full p-3 text-left border rounded-lg hover:bg-accent hover:border-primary transition-colors"
+                          className="w-full p-3 text-left border rounded-lg hover:bg-muted hover:border-primary/50 transition-colors"
                         >
                           <div className="text-sm font-mono text-muted-foreground">
                             {device.address}

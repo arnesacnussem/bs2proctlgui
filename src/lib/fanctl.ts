@@ -3,16 +3,18 @@ import {
   disconnect as bleDisconnect,
   subscribe,
   unsubscribe,
+  startScan,
+  stopScan,
 } from "@mnlphlp/plugin-blec";
-import { parseNotify, buildSetSpeedCmd } from "./ble";
+import { parseNotify } from "./ble";
 import { useFanStore } from "../store";
 import { invoke } from "@tauri-apps/api/core";
 
 const NOTIFY_UUID = "0000fff1-0000-1000-8000-00805f9b34fb";
 const RECONNECT_INTERVAL = 3000;
 
-let reconnectTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectAddress: string | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let shouldReconnect = false;
 let connecting = false;
 
@@ -21,16 +23,25 @@ function log(msg: string) {
 }
 
 async function trySubscribe() {
+  let notifyCount = 0;
+  let lastLoggedRPM = -1;
   log("subscribe start");
   try {
     await subscribe(NOTIFY_UUID, (data: number[]) => {
       const bytes = new Uint8Array(data);
-      const hex = [...bytes].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ');
       const parsed = parseNotify(bytes);
       if (parsed.rpm !== null) {
         useFanStore.getState().setCurrentRPM(Math.round(parsed.rpm));
       }
-      log(`notify type=0x${parsed.type?.toString(16) ?? '??'} rpm=${parsed.rpm} | ${hex}`);
+      if (parsed.chargeMode !== null) {
+        useFanStore.getState().setChargeMode(parsed.chargeMode);
+      }
+      notifyCount++;
+      if (Math.abs((parsed.rpm ?? 0) - lastLoggedRPM) >= 50) {
+        const hex = [...bytes].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        log(`notify type=0x${parsed.type?.toString(16) ?? '??'} rpm=${parsed.rpm} | ${hex}`);
+        lastLoggedRPM = parsed.rpm ?? 0;
+      }
     });
     log("subscribe OK");
   } catch (e) {
@@ -38,15 +49,13 @@ async function trySubscribe() {
   }
 }
 
-export async function setSpeed(rpm: number) {
-  const packet = buildSetSpeedCmd(rpm);
-  const hex = [...packet].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join(' ');
-  log(`setSpeed ${rpm} | ${hex}`);
+export async function setSpeed(rpm: number, light: number) {
+  log(`setSpeed rpm=${rpm} light=${light}`);
   try {
-    const result: string = await invoke("ble_write_test", { rpm });
-    log(`setSpeed OK: ${result}`);
+    await invoke("ble_write_test", { rpm, light });
+    log(`OK`);
   } catch (e) {
-    log(`setSpeed ERR: ${e}`);
+    log(`ERR: ${e}`);
   }
   useFanStore.getState().setTargetRPM(rpm);
 }
@@ -106,34 +115,67 @@ export async function disconnectDevice(): Promise<void> {
   useFanStore.getState().reset();
 }
 
+async function doReconnect() {
+  if (!shouldReconnect || !reconnectAddress) return;
+  const addr = reconnectAddress;
+  log(`reconnect scan+connect ${addr}...`);
+
+  try {
+    try { await unsubscribe(NOTIFY_UUID); } catch (_) {}
+    try { await bleDisconnect(); } catch (_) {}
+    useFanStore.getState().reset();
+
+    let found = false;
+    try {
+      const devices: { address: string }[] = [];
+      void devices;
+      await startScan((d: { address: string }[]) => {
+        if (!found && d.some((x) => x.address === addr)) {
+          found = true;
+        }
+      }, 5000);
+      await new Promise((r) => setTimeout(r, 5000));
+      await stopScan();
+    } catch (_) {}
+
+    if (!found) {
+      log("reconnect: device not found, retry in 3s");
+      reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
+      return;
+    }
+
+    await connect(addr, onDisconnected);
+    log("reconnect connected, subscribing...");
+    useFanStore.getState().setConnected(true);
+
+    await subscribe(NOTIFY_UUID, (data: number[]) => {
+      const bytes = new Uint8Array(data);
+      const parsed = parseNotify(bytes);
+      if (parsed.rpm !== null) {
+        useFanStore.getState().setCurrentRPM(Math.round(parsed.rpm));
+      }
+      if (parsed.chargeMode !== null) {
+        useFanStore.getState().setChargeMode(parsed.chargeMode);
+      }
+    });
+    log("reconnect subscribe OK");
+  } catch (e) {
+    log(`reconnect ERR: ${e}`);
+    reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
+  }
+}
+
 function startReconnect() {
   if (reconnectTimer) { log("reconnect already running"); return; }
   if (!reconnectAddress) { log("reconnect: no address"); return; }
-  log("startReconnect loop");
-
-  reconnectTimer = setInterval(async () => {
-    if (!shouldReconnect || !reconnectAddress) {
-      log("reconnect: stop (shouldReconnect changed)");
-      stopReconnect();
-      return;
-    }
-    log(`reconnect attempt to ${reconnectAddress}...`);
-    try {
-      await connect(reconnectAddress!, onDisconnected);
-      log("reconnect OK");
-      useFanStore.getState().setConnected(true);
-      stopReconnect();
-      await trySubscribe();
-    } catch (e) {
-      log(`reconnect ERR: ${e}`);
-    }
-  }, RECONNECT_INTERVAL);
+  log("startReconnect");
+  doReconnect();
 }
 
 function stopReconnect() {
   if (reconnectTimer) {
     log("stopReconnect");
-    clearInterval(reconnectTimer);
+    clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
 }

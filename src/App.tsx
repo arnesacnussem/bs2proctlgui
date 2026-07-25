@@ -38,8 +38,8 @@ const CustomTitleBar = () => {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
-        backgroundColor: "#333",
-        color: "white",
+        backgroundColor: "#1a1a2e",
+        color: "#e0e0e0",
         height: "24px",
         userSelect: "none",
       }}
