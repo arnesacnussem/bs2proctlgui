@@ -1,16 +1,44 @@
-use serde::Serialize;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
+    Manager,
 };
 use uuid::{uuid, Uuid};
+
+#[cfg(target_os = "windows")]
+mod pipe;
 
 const FFF2: Uuid = uuid!("0000fff2-0000-1000-8000-00805f9b34fb");
 const FFF0: Uuid = uuid!("0000fff0-0000-1000-8000-00805f9b34fb");
 
+/// Current charge mode (0 = not charging, 1 = 5V, 2 = QC, 3 = PD).
+/// Updated from the frontend as notify data is parsed; used by the pipe to
+/// clamp the maximum RPM.
+static CHARGE_MODE: AtomicU8 = AtomicU8::new(0);
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn current_charge_mode() -> u8 {
+    CHARGE_MODE.load(Ordering::Relaxed)
+}
+
+/// Max RPM allowed for a given charge mode (mirrors CHARGE_MAX_RPM in the UI).
+/// Mode 0/1 -> 2700, 2 (QC) -> 3300, 3 (PD) -> 4000.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn charge_max_rpm(charge_mode: u8) -> u32 {
+    match charge_mode {
+        2 => 3300,
+        3 => 4000,
+        _ => 2700,
+    }
+}
+
 #[tauri::command]
-async fn ble_write_test(rpm: u16, light: u8, app: tauri::AppHandle) -> Result<String, String> {
+fn set_charge_mode(mode: u8) {
+    CHARGE_MODE.store(mode, Ordering::Relaxed);
+}
+
+pub(crate) async fn write_speed(rpm: u16, light: u8) -> Result<String, String> {
     let handler = tauri_plugin_blec::get_handler().map_err(|e| e.to_string())?;
 
     if !handler.is_connected() {
@@ -35,6 +63,11 @@ async fn ble_write_test(rpm: u16, light: u8, app: tauri::AppHandle) -> Result<St
     }
 }
 
+#[tauri::command]
+async fn ble_write_test(rpm: u16, light: u8) -> Result<String, String> {
+    write_speed(rpm, light).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
@@ -44,7 +77,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_blec::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .invoke_handler(tauri::generate_handler![ble_write_test])
+        .invoke_handler(tauri::generate_handler![ble_write_test, set_charge_mode])
         .setup(|app| {
             let handle = app.handle();
 
@@ -110,6 +143,9 @@ pub fn run() {
             if std::env::args().any(|arg| arg == "--hidden") {
                 let _ = window.hide();
             }
+
+            #[cfg(target_os = "windows")]
+            pipe::start(app.handle().clone());
 
             Ok(())
         })

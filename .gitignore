@@ -1,6 +1,7 @@
 node_modules
 dist
 *.log
+tools/__pycache__/
 .vscode/*
 !.vscode/extensions.json
 .DS_Store

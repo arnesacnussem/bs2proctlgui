@@ -22,23 +22,29 @@ function log(msg: string) {
   useFanStore.getState().log(msg);
 }
 
+function onNotify(data: number[]) {
+  const bytes = new Uint8Array(data);
+  const parsed = parseNotify(bytes);
+  if (parsed.rpm !== null) {
+    useFanStore.getState().setCurrentRPM(Math.round(parsed.rpm));
+  }
+  if (parsed.chargeMode !== null) {
+    useFanStore.getState().setChargeMode(parsed.chargeMode);
+    invoke("set_charge_mode", { mode: parsed.chargeMode }).catch(() => {});
+  }
+}
+
 async function trySubscribe() {
   let notifyCount = 0;
   let lastLoggedRPM = -1;
   log("subscribe start");
   try {
     await subscribe(NOTIFY_UUID, (data: number[]) => {
-      const bytes = new Uint8Array(data);
-      const parsed = parseNotify(bytes);
-      if (parsed.rpm !== null) {
-        useFanStore.getState().setCurrentRPM(Math.round(parsed.rpm));
-      }
-      if (parsed.chargeMode !== null) {
-        useFanStore.getState().setChargeMode(parsed.chargeMode);
-      }
+      onNotify(data);
       notifyCount++;
+      const parsed = parseNotify(new Uint8Array(data));
       if (Math.abs((parsed.rpm ?? 0) - lastLoggedRPM) >= 50) {
-        const hex = [...bytes].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        const hex = [...new Uint8Array(data)].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ');
         log(`notify type=0x${parsed.type?.toString(16) ?? '??'} rpm=${parsed.rpm} | ${hex}`);
         lastLoggedRPM = parsed.rpm ?? 0;
       }
@@ -118,49 +124,49 @@ export async function disconnectDevice(): Promise<void> {
 async function doReconnect() {
   if (!shouldReconnect || !reconnectAddress) return;
   const addr = reconnectAddress;
-  log(`reconnect scan+connect ${addr}...`);
+  log(`reconnect to ${addr}...`);
 
   try {
     try { await unsubscribe(NOTIFY_UUID); } catch (_) {}
-    try { await bleDisconnect(); } catch (_) {}
-    useFanStore.getState().reset();
 
-    let found = false;
-    try {
-      const devices: { address: string }[] = [];
-      void devices;
-      await startScan((d: { address: string }[]) => {
-        if (!found && d.some((x) => x.address === addr)) {
-          found = true;
-        }
-      }, 5000);
-      await new Promise((r) => setTimeout(r, 5000));
-      await stopScan();
-    } catch (_) {}
-
-    if (!found) {
-      log("reconnect: device not found, retry in 3s");
-      reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
-      return;
-    }
-
+    // Try direct connect first: the device is usually still in the scan cache,
+    // so we can skip the scan and reconnect by address immediately.
     await connect(addr, onDisconnected);
-    log("reconnect connected, subscribing...");
+    log("reconnect OK (direct), subscribing...");
     useFanStore.getState().setConnected(true);
+    await subscribe(NOTIFY_UUID, onNotify);
+    log("reconnect subscribe OK");
+    return;
+  } catch (e) {
+    log(`reconnect direct ERR: ${e}`);
+  }
 
-    await subscribe(NOTIFY_UUID, (data: number[]) => {
-      const bytes = new Uint8Array(data);
-      const parsed = parseNotify(bytes);
-      if (parsed.rpm !== null) {
-        useFanStore.getState().setCurrentRPM(Math.round(parsed.rpm));
+  // Fall back: scan for the device, then connect.
+  let found = false;
+  try {
+    await startScan((d: { address: string }[]) => {
+      if (!found && d.some((x) => x.address === addr)) {
+        found = true;
       }
-      if (parsed.chargeMode !== null) {
-        useFanStore.getState().setChargeMode(parsed.chargeMode);
-      }
-    });
+    }, 8000);
+    await new Promise((r) => setTimeout(r, 8000));
+    await stopScan();
+  } catch (_) {}
+
+  if (!found) {
+    log("reconnect: device not found, retry in 3s");
+    reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
+    return;
+  }
+
+  try {
+    await connect(addr, onDisconnected);
+    log("reconnect OK (scan), subscribing...");
+    useFanStore.getState().setConnected(true);
+    await subscribe(NOTIFY_UUID, onNotify);
     log("reconnect subscribe OK");
   } catch (e) {
-    log(`reconnect ERR: ${e}`);
+    log(`reconnect connect ERR: ${e}, retry in 3s`);
     reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
   }
 }

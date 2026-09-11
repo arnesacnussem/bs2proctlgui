@@ -8,6 +8,7 @@ import { BleDevice } from "@mnlphlp/plugin-blec";
 import { connectDevice, disconnectDevice, setSpeed } from "@/lib/fanctl";
 import { SPEED_MODES, SpeedMode, CHARGE_NAMES, CHARGE_MAX_RPM } from "@/lib/ble";
 import { useFanStore } from "@/store";
+import { listen } from "@tauri-apps/api/event";
 
 let storePromise: Promise<import("@tauri-apps/plugin-store").Store> | null = null;
 async function getStore() {
@@ -76,6 +77,28 @@ export default function FanController({ device, onDisconnect }: FanControllerPro
     else if (rpm < 3500) setSpeedLight(2);
     else setSpeedLight(3);
   }, [currentRPM, targetSpeed]);
+
+  useEffect(() => {
+    const unlisten = listen<{ rpm: number; light: number }>("fan-speed-set", (e) => {
+      const { rpm, light } = e.payload;
+      setTargetSpeed(rpm);
+      setMode((prev) => {
+        const m = SPEED_MODES.find((m) => m.light === light);
+        if (m) {
+          setSavedSpeeds((prevSpeeds) => {
+            const next = [...prevSpeeds];
+            next[light] = rpm;
+            return next;
+          });
+          return m;
+        }
+        return prev;
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   const handleModeChange = (m: SpeedMode) => {
     loadSpeedConfig().then((cfg) => {
