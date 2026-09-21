@@ -19,14 +19,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Enable Corepack
-        run: corepack enable
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: yarn
+
+      # Enable corepack AFTER setup-node so its yarn shims land in the node
+      # directory that takes precedence on PATH (otherwise yarn resolves to the
+      # runner's preinstalled Yarn 1 and errors on the declared packageManager).
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Install JavaScript dependencies
         run: yarn install --frozen-lockfile
