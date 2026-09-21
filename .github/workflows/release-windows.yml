@@ -47,5 +47,5 @@ jobs:
           releaseBody: Windows amd64 installer for BS2 Pro.
           releaseDraft: false
           prerelease: false
-          tauriScript: corepack yarn
+          tauriScript: corepack yarn tauri
           args: --target x86_64-pc-windows-msvc
