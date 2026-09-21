@@ -26,7 +26,9 @@ jobs:
         run: corepack enable
 
       - name: Install JavaScript dependencies
-        run: yarn install --frozen-lockfile
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: corepack yarn install --frozen-lockfile
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -43,4 +45,5 @@ jobs:
           releaseBody: Windows amd64 installer for BS2 Pro.
           releaseDraft: false
           prerelease: false
+          tauriScript: corepack yarn
           args: --target x86_64-pc-windows-msvc
