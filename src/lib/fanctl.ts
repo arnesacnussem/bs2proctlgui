@@ -3,19 +3,14 @@ import {
   disconnect as bleDisconnect,
   subscribe,
   unsubscribe,
-  startScan,
-  stopScan,
 } from "@mnlphlp/plugin-blec";
 import { parseNotify } from "./ble";
 import { useFanStore } from "../store";
 import { invoke } from "@tauri-apps/api/core";
 
 const NOTIFY_UUID = "0000fff1-0000-1000-8000-00805f9b34fb";
-const RECONNECT_INTERVAL = 3000;
 
-let reconnectAddress: string | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let shouldReconnect = false;
+let connectedAddress: string | null = null;
 let connecting = false;
 
 function log(msg: string) {
@@ -69,119 +64,46 @@ export async function setSpeed(rpm: number, light: number) {
 function onDisconnected() {
   log("onDisconnected fired");
   connecting = false;
-  if (!shouldReconnect) {
-    log("onDisconnected: shouldReconnect=false, ignoring");
-    return;
-  }
+  connectedAddress = null;
   useFanStore.getState().setConnected(false);
-  startReconnect();
 }
 
-export async function connectDevice(address: string): Promise<void> {
+export async function connectDevice(address: string): Promise<boolean> {
   const store = useFanStore.getState();
   log(`connectDevice(${address}) connecting=${connecting} connected=${store.connected}`);
 
-  if (connecting || (store.connected && reconnectAddress === address)) {
+  if (connecting || connectedAddress === address) {
     log("connect skipped (already)");
-    return;
+    return true;
   }
 
-  shouldReconnect = true;
-  reconnectAddress = address;
   connecting = true;
 
   log("calling bleConnect...");
   try {
     await connect(address, onDisconnected);
     log("bleConnect OK, setting connected=true");
+    connectedAddress = address;
     useFanStore.getState().setConnected(true);
   } catch (e) {
     log(`bleConnect ERR: ${e}`);
-    useFanStore.getState().setConnected(false);
     connecting = false;
-    startReconnect();
-    return;
+    connectedAddress = null;
+    return false;
   }
 
   connecting = false;
-  stopReconnect();
   await trySubscribe();
+  return true;
 }
 
 export async function disconnectDevice(): Promise<void> {
   log("disconnectDevice");
-  stopReconnect();
-  shouldReconnect = false;
-  reconnectAddress = null;
+  connectedAddress = null;
   connecting = false;
 
   try { await unsubscribe(NOTIFY_UUID); log("unsubscribe OK"); } catch (e) { log(`unsubscribe ERR: ${e}`); }
   try { await bleDisconnect(); log("bleDisconnect OK"); } catch (e) { log(`bleDisconnect ERR: ${e}`); }
 
   useFanStore.getState().reset();
-}
-
-async function doReconnect() {
-  if (!shouldReconnect || !reconnectAddress) return;
-  const addr = reconnectAddress;
-  log(`reconnect to ${addr}...`);
-
-  try {
-    try { await unsubscribe(NOTIFY_UUID); } catch (_) {}
-
-    // Try direct connect first: the device is usually still in the scan cache,
-    // so we can skip the scan and reconnect by address immediately.
-    await connect(addr, onDisconnected);
-    log("reconnect OK (direct), subscribing...");
-    useFanStore.getState().setConnected(true);
-    await subscribe(NOTIFY_UUID, onNotify);
-    log("reconnect subscribe OK");
-    return;
-  } catch (e) {
-    log(`reconnect direct ERR: ${e}`);
-  }
-
-  // Fall back: scan for the device, then connect.
-  let found = false;
-  try {
-    await startScan((d: { address: string }[]) => {
-      if (!found && d.some((x) => x.address === addr)) {
-        found = true;
-      }
-    }, 8000);
-    await new Promise((r) => setTimeout(r, 8000));
-    await stopScan();
-  } catch (_) {}
-
-  if (!found) {
-    log("reconnect: device not found, retry in 3s");
-    reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
-    return;
-  }
-
-  try {
-    await connect(addr, onDisconnected);
-    log("reconnect OK (scan), subscribing...");
-    useFanStore.getState().setConnected(true);
-    await subscribe(NOTIFY_UUID, onNotify);
-    log("reconnect subscribe OK");
-  } catch (e) {
-    log(`reconnect connect ERR: ${e}, retry in 3s`);
-    reconnectTimer = setTimeout(doReconnect, RECONNECT_INTERVAL);
-  }
-}
-
-function startReconnect() {
-  if (reconnectTimer) { log("reconnect already running"); return; }
-  if (!reconnectAddress) { log("reconnect: no address"); return; }
-  log("startReconnect");
-  doReconnect();
-}
-
-function stopReconnect() {
-  if (reconnectTimer) {
-    log("stopReconnect");
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
 }

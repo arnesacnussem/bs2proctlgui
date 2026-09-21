@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CardContent,
   CardDescription,
@@ -15,30 +15,54 @@ import {
   Loader2,
   Radio,
 } from "lucide-react";
-import { BleDevice, startScan } from "@mnlphlp/plugin-blec";
+import { BleDevice, startScan, stopScan } from "@mnlphlp/plugin-blec";
+
+const SCAN_TIMEOUT = 30000;
 
 interface DeviceSelectorProps {
   onDeviceSelect: (device: BleDevice) => void;
+  preferredDevice?: { address: string; name: string } | null;
 }
 
-// Stub function that simulates Bluetooth device scanning
-async function scan(): Promise<BleDevice[]> {
-  return new Promise((resolve) => {
-    startScan((devices) => resolve(devices), 30000);
+// Scans for SCAN_TIMEOUT ms. The plugin reports newly discovered devices every
+// ~200ms, so the full list is accumulated until the scan ends and streamed to
+// onUpdate as it grows.
+async function scan(
+  onUpdate: (devices: BleDevice[]) => void
+): Promise<BleDevice[]> {
+  return new Promise((resolve, reject) => {
+    const found = new Map<string, BleDevice>();
+    startScan((devices) => {
+      for (const device of devices) {
+        found.set(device.address, device);
+      }
+      onUpdate([...found.values()]);
+    }, SCAN_TIMEOUT).catch((error) => reject(error));
+
+    setTimeout(async () => {
+      try {
+        await stopScan();
+      } catch (_) {}
+      resolve([...found.values()]);
+    }, SCAN_TIMEOUT);
   });
 }
 
 export default function DeviceSelector({
   onDeviceSelect,
+  preferredDevice,
 }: DeviceSelectorProps) {
   const [devices, setDevices] = useState<BleDevice[]>([]);
   const [scanning, setScanning] = useState(false);
   const [showUnnamed, setShowUnnamed] = useState(false);
+  const [autoPicked, setAutoPicked] = useState(false);
+  const autoPickedRef = useRef(false);
 
   const handleScan = async () => {
     setScanning(true);
+    setDevices([]);
     try {
-      const foundDevices = await scan();
+      const foundDevices = await scan((partial) => setDevices(partial));
       setDevices(foundDevices);
     } catch (error) {
       console.error("Scan failed:", error);
@@ -50,6 +74,21 @@ export default function DeviceSelector({
   useEffect(() => {
     handleScan();
   }, []);
+
+  // Reconnect behaves like the new-connect flow: scan first, then connect. If a
+  // previously used device is declared via preferredDevice, connect to it as
+  // soon as it shows up in the scan results instead of connecting blindly.
+  useEffect(() => {
+    if (!preferredDevice || autoPickedRef.current) return;
+    const match = devices.find(
+      (device) => device.address === preferredDevice.address
+    );
+    if (match) {
+      autoPickedRef.current = true;
+      setAutoPicked(true);
+      onDeviceSelect(match);
+    }
+  }, [devices, preferredDevice, onDeviceSelect]);
 
   const namedDevices = devices.filter(
     (device) => device.name !== device.address
@@ -88,6 +127,15 @@ export default function DeviceSelector({
             </>
           )}
         </Button>
+
+        {scanning &&
+          preferredDevice &&
+          !autoPicked &&
+          !devices.some((d) => d.address === preferredDevice.address) && (
+            <p className="text-sm text-muted-foreground text-center">
+              Looking for saved device &quot;{preferredDevice.name}&quot;...
+            </p>
+          )}
 
         {devices.length > 0 && (
           <div className="space-y-2">

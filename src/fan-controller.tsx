@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Wind, Gauge, Loader2 } from "lucide-react";
@@ -42,9 +42,10 @@ async function loadSpeedConfig(): Promise<{ speeds: number[]; activeMode: number
 interface FanControllerProps {
   device: BleDevice;
   onDisconnect: () => void;
+  onConnectionLost: () => void;
 }
 
-export default function FanController({ device, onDisconnect }: FanControllerProps) {
+export default function FanController({ device, onDisconnect, onConnectionLost }: FanControllerProps) {
   const connected = useFanStore((s) => s.connected);
   const currentRPM = useFanStore((s) => s.currentRPM);
   const chargeMode = useFanStore((s) => s.chargeMode);
@@ -57,8 +58,20 @@ export default function FanController({ device, onDisconnect }: FanControllerPro
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [savedSpeeds, setSavedSpeeds] = useState<number[]>([1700, 2400, 3000, 4000]);
 
+  // Keep the latest callbacks in refs so effects can use them without
+  // re-running on every render.
+  const onDisconnectRef = useRef(onDisconnect);
+  onDisconnectRef.current = onDisconnect;
+  const onConnectionLostRef = useRef(onConnectionLost);
+  onConnectionLostRef.current = onConnectionLost;
+
   useEffect(() => {
-    connectDevice(device.address);
+    // Scan-then-connect happens in the device selector; here we only connect to
+    // the device the user picked. If that fails, fall back to the scan flow
+    // instead of retrying blindly.
+    connectDevice(device.address).then((ok) => {
+      if (!ok) onConnectionLostRef.current();
+    });
     loadSpeedConfig().then((cfg) => {
       if (cfg) {
         const m = cfg.activeMode ?? 1;
@@ -69,6 +82,18 @@ export default function FanController({ device, onDisconnect }: FanControllerPro
       setInitialized(true);
     });
   }, [device.address]);
+
+  // Connection dropped while we were connected: return to the scan flow (same
+  // as a new connect) instead of showing a perpetual "Reconnecting" spinner.
+  const wasConnected = useRef(false);
+  useEffect(() => {
+    if (connected && !wasConnected.current) {
+      wasConnected.current = true;
+    } else if (!connected && wasConnected.current) {
+      wasConnected.current = false;
+      onConnectionLostRef.current();
+    }
+  }, [connected]);
 
   useEffect(() => {
     const rpm = currentRPM || targetSpeed;
@@ -163,7 +188,7 @@ export default function FanController({ device, onDisconnect }: FanControllerPro
             onClick={handleDisconnectClick}
           >
             <div className={`w-2 h-2 rounded-full ${connected ? "bg-green-400 animate-pulse" : "bg-gray-500"}`} />
-            {connected ? (confirmDisconnect ? "Confirm?" : "Connected") : "Reconnecting"}
+            {connected ? (confirmDisconnect ? "Confirm?" : "Connected") : "Connecting"}
           </Badge>
         </div>
       </div>
@@ -171,7 +196,7 @@ export default function FanController({ device, onDisconnect }: FanControllerPro
       {!connected && initialized && (
         <div className="flex flex-col items-center justify-center py-12 space-y-4 text-muted-foreground">
           <Loader2 className="w-12 h-12 animate-spin" />
-          <p className="text-sm">Reconnecting to {device.name}...</p>
+          <p className="text-sm">Connecting to {device.name}...</p>
           <p className="text-xs font-mono">{device.address}</p>
           <Button variant="outline" size="sm" onClick={handleDisconnectClick}>
             Cancel

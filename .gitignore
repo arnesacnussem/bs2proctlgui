@@ -6,6 +6,15 @@ tools/__pycache__/
 !.vscode/extensions.json
 .DS_Store
 
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+.yarn/install-state.gz
+.pnp.*
+
 # Rust build
 src-tauri/target/
 

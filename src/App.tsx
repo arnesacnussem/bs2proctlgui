@@ -5,7 +5,6 @@ import DeviceSelector from "./device-selector";
 import { BleDevice } from "@mnlphlp/plugin-blec";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X, Fan } from "lucide-react";
-import { connectDevice } from "./lib/fanctl";
 
 let storePromise: Promise<import("@tauri-apps/plugin-store").Store> | null = null;
 async function getStore() {
@@ -62,26 +61,38 @@ const CustomTitleBar = () => {
 
 function App() {
   const [selectedDevice, setSelectedDevice] = useState<BleDevice | null>(null);
-  const [autoConnected, setAutoConnected] = useState(false);
+  const [lastDevice, setLastDevice] = useState<{
+    address: string;
+    name: string;
+  } | null>(null);
 
+  // Load the previously used device so the device selector can scan for it and
+  // reconnect. Reconnecting uses the same flow as a new connect: scan, then
+  // connect (never a blind connect by address).
   useEffect(() => {
-    if (autoConnected) return;
-    getLastDevice().then((last) => {
-      if (last) {
-        connectDevice(last.address).then(() => {
-          setSelectedDevice({ address: last.address, name: last.name } as BleDevice);
-        }).catch(() => {});
-      }
-    });
-    setAutoConnected(true);
+    getLastDevice()
+      .then((last) => {
+        if (last) setLastDevice(last);
+      })
+      .catch(() => {});
   }, []);
 
   const handleDeviceSelect = (device: BleDevice) => {
     saveLastDevice(device.address, device.name);
+    setLastDevice({ address: device.address, name: device.name });
     setSelectedDevice(device);
   };
 
+  // User-initiated disconnect: forget the auto-reconnect target, so the next
+  // scan is a plain manual pick.
   const handleDisconnect = () => {
+    setLastDevice(null);
+    setSelectedDevice(null);
+  };
+
+  // Unexpected connection loss: keep the saved device so the scan flow
+  // reconnects (scan, then connect) as soon as it finds it again.
+  const handleConnectionLost = () => {
     setSelectedDevice(null);
   };
 
@@ -90,9 +101,16 @@ function App() {
       <CustomTitleBar />
       <div className="pt-4 overflow-auto max-h-[680px]">
         {!selectedDevice ? (
-          <DeviceSelector onDeviceSelect={handleDeviceSelect} />
+          <DeviceSelector
+            onDeviceSelect={handleDeviceSelect}
+            preferredDevice={lastDevice}
+          />
         ) : (
-          <FanController device={selectedDevice} onDisconnect={handleDisconnect} />
+          <FanController
+            device={selectedDevice}
+            onDisconnect={handleDisconnect}
+            onConnectionLost={handleConnectionLost}
+          />
         )}
       </div>
     </>
